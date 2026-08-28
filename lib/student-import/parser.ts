@@ -11,23 +11,57 @@ export const normalizeGender = (value: string) => /^(m|male)$/i.test(clean(value
 export function parseAdmissionHtml(html: string, departments: string[] = []): ParsedStudent[] {
   const departmentMap = new Map(departments.map((department) => [clean(department).toLowerCase(), department]))
   const records: ParsedStudent[] = []
-  for (const tableMatch of html.matchAll(/<table[^>]*>([\s\S]*?)<\/table>/gi)) {
-    const rows = [...tableMatch[1].matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)].map((match) => cellValues(match[1])).filter((row) => row.length > 1)
-    const header = rows.find((row) => row.some((value) => headers.name.test(value) || headers.jamb.test(value)))
-    if (!header) continue
-    const columns = { name: indexOf(header, headers.name), jamb: indexOf(header, headers.jamb), gender: indexOf(header, headers.gender), department: indexOf(header, headers.department), school: indexOf(header, headers.school) }
-    for (const row of rows.slice(rows.indexOf(header) + 1)) {
+  const seenRows = new Set<string>()
+  // Read every row globally rather than only the outermost table. Several
+  // WordPress/TablePress pages wrap the actual admission table in another
+  // table, which makes an outer-table regex miss the data rows.
+  const rows = [...html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)]
+    .map((match) => cellValues(match[1]))
+    .filter((row) => row.length > 1)
+
+  // FUTO pages are not consistent: some use a normal table, while others
+  // wrap the real rows in nested tables and put department after state/LGA.
+  for (let headerIndex = 0; headerIndex < rows.length; headerIndex += 1) {
+    const header = rows[headerIndex]
+    if (!header.some((value) => headers.name.test(value) || headers.jamb.test(value))) continue
+    const columns = {
+      name: indexOf(header, headers.name),
+      jamb: indexOf(header, headers.jamb),
+      gender: indexOf(header, headers.gender),
+      department: indexOf(header, headers.department),
+      school: indexOf(header, headers.school),
+      state: indexOf(header, /^(state|states)$/i),
+      lga: indexOf(header, /^(l\.?g\.?a|local\s*government|local\s*govt)$/i),
+    }
+    for (const row of rows.slice(headerIndex + 1)) {
+      if (row.length < 3 || row.some((value) => headers.name.test(value) && !headers.jamb.test(value))) continue
       const value = (index: number) => index >= 0 ? clean(row[index] ?? '') : ''
-      const name = value(columns.name), jambNo = normalizeJamb(value(columns.jamb)), gender = normalizeGender(value(columns.gender)), rawDepartment = value(columns.department)
+      const jambNo = normalizeJamb(value(columns.jamb))
+      const gender = normalizeGender(value(columns.gender))
+      const inferredName = columns.name >= 0 && value(columns.name) ? value(columns.name) : row.find((cell, index) => index > columns.jamb && index !== columns.gender && !/^(m|f|male|female|imo|abia|anambra)$/i.test(clean(cell)) && /[a-z]{2,}\s+[a-z]{2,}/i.test(clean(cell))) ?? ''
+      const name = inferredName
+      let rawDepartment = value(columns.department)
+      // Headerless department columns are common. Prefer a supplied registry
+      // match; otherwise use the cell immediately following LGA/state.
+      if (!rawDepartment && departments.length) {
+        rawDepartment = row.find((cell) => departmentMap.has(clean(cell).toLowerCase())) ?? ''
+      }
+      if (!rawDepartment && columns.lga >= 0) rawDepartment = clean(row[columns.lga + 1] ?? '')
+      if (!rawDepartment && columns.state >= 0) rawDepartment = clean(row[columns.state + 2] ?? '')
       if (!name && !jambNo) continue
+      const fingerprint = `${jambNo}|${name.toLowerCase()}|${row.join('|')}`
+      if (seenRows.has(fingerprint)) continue
+      seenRows.add(fingerprint)
       const department = departmentMap.get(rawDepartment.toLowerCase()) ?? rawDepartment
       let status: ParsedStudent['status'] = 'valid', issue: string | undefined
       if (!jambNo) { status = 'missing-jamb'; issue = 'Missing JAMB registration number' }
       else if (!gender) { status = 'review'; issue = 'Gender could not be confidently identified' }
-      else if (!rawDepartment) { status = 'review'; issue = 'Department is missing' }
-      else if (departments.length > 0 && !departmentMap.has(rawDepartment.toLowerCase())) { status = 'unmatched-dept'; issue = 'Department not recognized in registry' }
+      else if (!rawDepartment) { status = 'review'; issue = 'Department is missing; school can be resolved after department matching' }
+      else if (departments.length > 0 && !departmentMap.has(rawDepartment.toLowerCase())) { status = 'unmatched-dept'; issue = 'Department not recognized in registry; school will be resolved after matching' }
       records.push({ name, jambNo, gender, school: value(columns.school), department, status, issue })
     }
+    // A page can contain multiple admission tables; continue scanning so a
+    // merit list and its supplementary sections are both detected.
   }
   return records.slice(0, 25000)
 }
