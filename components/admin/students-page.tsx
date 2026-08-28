@@ -60,48 +60,27 @@ export function AdminStudentsPage() {
   const schools = ['SAAT', 'SBMS', 'SOBS', 'SEET', 'SESET', 'SOES', 'SOHT', 'SICT', 'SLIT', 'SOPS']
 
   const handleStartCrawl = async () => {
-    if (!selectedSession) {
-      setError('Please select an academic session before starting the crawl.')
-      return
-    }
-    if (!admissionUrl.trim()) {
-      setError('Please enter an admission list URL.')
-      return
-    }
-
+    if (!selectedSession) return setError('Please select an academic session before starting the crawl.')
+    if (!admissionUrl.trim()) return setError('Please enter an admission list URL.')
     setError('')
     setImportStatus('crawling')
-
-    // Simulate crawling
-    setTimeout(() => {
+    try {
       setImportStatus('analyzing')
-
-      setTimeout(() => {
-        // Simulate preview with realistic data
-        const mockRecords: PreviewRecord[] = [
-          { id: '1', name: 'John Doe', jambNo: '12345678A', gender: 'Male', school: 'SEET', department: 'Electrical Engineering', session: selectedSession, status: 'valid' },
-          { id: '2', name: 'Jane Smith', jambNo: '12345678B', gender: 'Female', school: 'SBMS', department: 'Medicine', session: selectedSession, status: 'valid' },
-          { id: '3', name: 'Ahmed Hassan', jambNo: '12345678A', gender: 'Male', school: 'SEET', department: 'Civil Engineering', session: selectedSession, status: 'duplicate', issue: 'Duplicate JAMB number' },
-          { id: '4', name: 'Zainab Adeyemi', jambNo: '', gender: 'Female', school: 'SOBS', department: 'Biology', session: selectedSession, status: 'missing-jamb', issue: 'Missing JAMB registration number' },
-          { id: '5', name: 'Emeka Nwosu', jambNo: '12345678C', gender: 'M', school: 'SICT', department: 'Unknown Tech Dept', session: selectedSession, status: 'unmatched-dept', issue: 'Department not recognized in registry' },
-        ]
-
-        setPreview({
-          records: mockRecords,
-          summary: {
-            detected: 5,
-            valid: 2,
-            duplicates: 1,
-            missingJamb: 1,
-            unmatchedDept: 1,
-          },
-        })
-        setImportStatus('preview')
-      }, 1500)
-    }, 2000)
+      const response = await fetch('/api/student-import/preview', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: admissionUrl, session: selectedSession, departments: [] }) })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Unable to crawl the admission-list page.')
+      setPreview({ records: data.records as PreviewRecord[], summary: data.summary })
+      setImportStatus('preview')
+    } catch (crawlError) {
+      setImportStatus('error')
+      setError(crawlError instanceof Error ? crawlError.message : 'Unable to crawl the admission-list page.')
+    }
   }
 
   const handleConfirmImport = async () => {
+    const count = preview.summary?.valid || 0
+    const confirmed = window.confirm(`Confirm import of ${count} records for ${selectedSession}?\n\nSource: ${admissionUrl}\nDuplicates: ${preview.summary?.duplicates || 0}\nRecords requiring review: ${(preview.summary?.review || 0) + (preview.summary?.missingJamb || 0) + (preview.summary?.unmatchedDept || 0)}`)
+    if (!confirmed) return
     setImportStatus('importing')
 
     setTimeout(() => {

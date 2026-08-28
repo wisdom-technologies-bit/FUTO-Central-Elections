@@ -67,6 +67,26 @@ create table if not exists students (
 );
 create index if not exists students_scope_idx on students(school_id, department_id, level, academic_session_id);
 
+-- Student registry import audit trail. Records are staged before an administrator confirms import.
+create table if not exists import_batches (
+  id uuid primary key default gen_random_uuid(), source_url text not null, academic_session_id uuid references academic_sessions(id) on delete restrict,
+  selected_session text not null, started_at timestamptz not null default now(), completed_at timestamptz,
+  imported_by uuid, detected_count integer not null default 0, imported_count integer not null default 0,
+  duplicate_count integer not null default 0, review_count integer not null default 0,
+  status text not null default 'pending' check (status in ('pending','crawling','preview_ready','imported','partially_imported','failed')),
+  error_message text, metadata jsonb not null default '{}'::jsonb, created_at timestamptz not null default now()
+);
+create index if not exists import_batches_created_idx on import_batches(created_at desc);
+create table if not exists imported_records (
+  id uuid primary key default gen_random_uuid(), batch_id uuid not null references import_batches(id) on delete cascade,
+  student_id uuid references students(id) on delete set null, full_name text not null, jamb_registration_number text,
+  gender text, school_id uuid references schools(id) on delete restrict, department_id uuid references departments(id) on delete restrict,
+  selected_session text not null, source_url text not null, status text not null default 'pending' check (status in ('pending','imported','duplicate','review','rejected')),
+  issue text, raw_data jsonb not null default '{}'::jsonb, imported_at timestamptz, created_at timestamptz not null default now()
+);
+create index if not exists imported_records_batch_idx on imported_records(batch_id, status);
+create index if not exists imported_records_jamb_idx on imported_records(jamb_registration_number, selected_session);
+
 create table if not exists voting_records (
   id uuid primary key default gen_random_uuid(), election_id uuid not null references elections(id) on delete restrict,
   student_id uuid not null references students(id) on delete restrict, voted_at timestamptz not null default now(),
